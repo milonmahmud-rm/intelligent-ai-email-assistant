@@ -1,0 +1,2292 @@
+{
+  "name": "ai-powered-email-automation",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "filters": {}
+      },
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -1808,
+        -304
+      ],
+      "id": "45a90888-3f49-4f76-97b9-fc47b61ebb18",
+      "name": "Gmail Trigger",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "IHQeKQ6QXxp16hLv",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "messageId": "={{$json.id}}",
+        "simple": false,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        -1584,
+        -304
+      ],
+      "id": "1c7bc6ec-a3f5-4b99-9ac0-4b5a96243d6e",
+      "name": "Get a message",
+      "webhookId": "de8eb858-6d3c-4fe5-bda9-2aef8f885e32",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "IHQeKQ6QXxp16hLv",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const msg = $json;\n\n// Body extraction\nlet body = (msg.text || '').trim();\n\nif (!body && msg.html) {\n  body = msg.html\n    .replace(/<style[\\s\\S]*?<\\/style>/gi, '')\n    .replace(/<script[\\s\\S]*?<\\/script>/gi, '')\n    .replace(/<\\/p>/gi, '\\n')\n    .replace(/<br\\s*\\/?>/gi, '\\n')\n    .replace(/<[^>]+>/g, '')\n    .replace(/&nbsp;/g, ' ')\n    .replace(/&amp;/g, '&')\n    .replace(/&lt;/g, '<')\n    .replace(/&gt;/g, '>')\n    .trim();\n}\n\nbody = body.replace(/\\r\\n/g, '\\n').trim();\n\n// Sender\nconst fromObj = msg.from?.value?.[0] || {};\nconst fromEmail = (fromObj.address || '').toLowerCase();\nconst fromName = fromObj.name || '';\nconst fromDomain = fromEmail.includes('@') ? fromEmail.split('@')[1] : '';\n\n// Header signals\nconst headers = msg.headers || {};\nconst headersText = Object.values(headers).join('\\n').toLowerCase();\n\nconst hasListUnsubscribe =\n  headersText.includes('list-unsubscribe') ||\n  Boolean(headers['list-unsubscribe']) ||\n  Boolean(headers['List-Unsubscribe']);\n\nconst isAutoSubmitted = headersText.includes('auto-submitted');\nconst isBulk =\n  headersText.includes('precedence: bulk') ||\n  headersText.includes('precedence: list') ||\n  headersText.includes('x-autoreply') ||\n  headersText.includes('x-auto-response-suppress');\n\nconst isNoReply = fromEmail.includes('no-reply') || fromEmail.includes('noreply');\n\nconst likelyMarketing =\n  hasListUnsubscribe ||\n  isBulk ||\n  headersText.includes('list-id') ||\n  headersText.includes('unsubscribe');\n\n// Return as a single object (not an array)\nreturn {\n  id: msg.id,\n  threadId: msg.threadId,\n  subject: msg.subject || '',\n  snippet: msg.snippet || '',\n  date: msg.date || '',\n  fromName,\n  fromEmail,\n  fromDomain,\n  to: msg.to?.text || '',\n  bodyText: body,\n  signals: {\n    isNoReply,\n    hasListUnsubscribe,\n    isAutoSubmitted,\n    isBulk,\n    likelyMarketing,\n  },\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1376,
+        -304
+      ],
+      "id": "d6c40cae-a8a4-405e-8d0e-c861e5bc55ff",
+      "name": "Normalize Email"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const e = $json;\n\nconst domain = (e.fromDomain || '').toLowerCase();\nconst fromEmail = (e.fromEmail || '').toLowerCase();\nconst subject = (e.subject || '').toLowerCase();\nconst body = (e.bodyText || '').toLowerCase();\n\nconst domainMatch = (list) => list.some(d => domain === d || domain.endsWith('.' + d));\nconst containsAny = (list) => list.some(k => subject.includes(k) || body.includes(k));\n\n// --- domains ---\nconst securityDomains = [\n  'google.com', 'accounts.google.com',\n  'facebookmail.com', 'facebook.com',\n  'x.com', 'twitter.com',\n  'youtube.com', 'accounts.youtube.com',\n  'microsoft.com', 'account.microsoft.com',\n  'apple.com', 'id.apple.com'\n];\n\nconst socialDomains = [\n  'facebookmail.com', 'facebook.com',\n  'x.com', 'twitter.com',\n  'youtube.com', 'accounts.youtube.com',\n  'instagram.com', 'linkedin.com', 'tiktok.com', 'pinterest.com'\n];\n\n// --- keywords ---\nconst securityKw = [\n  'security alert', 'suspicious', 'sign-in', 'signin', 'new login',\n  'unusual activity', 'password changed', 'password reset',\n  '2-step', '2fa', 'verification code', 'otp',\n  'confirm your identity', 'recover', 'reset your password'\n];\n\nconst socialKw = [\n  'new follower', 'new like', 'commented', 'mentioned you',\n  'tagged you', 'notification', 'digest', 'weekly update'\n];\n\nconst promoKw = [\n  'sale', 'discount', 'offer', 'limited time', 'deal',\n  'newsletter', 'promotion', 'promo', 'coupon', 'save ',\n  'new arrivals', 'free shipping', 'unsubscribe'\n];\n\n// --- heuristics ---\nconst isSecurityDomain = domainMatch(securityDomains);\nconst isSocialDomain = domainMatch(socialDomains);\n\nconst isLikelyPromoSender =\n  e.signals?.likelyMarketing ||\n  e.signals?.hasListUnsubscribe ||\n  e.signals?.isBulk ||\n  e.signals?.isNoReply ||\n  fromEmail.includes('marketing') ||\n  fromEmail.includes('newsletter') ||\n  fromEmail.includes('offers') ||\n  fromEmail.includes('promo');\n\nlet ruleCategory = null;\nlet ruleReason = '';\n\n// 1) SECURITY (highest priority)\nif (isSecurityDomain && containsAny(securityKw)) {\n  ruleCategory = 'security';\n  ruleReason = 'Security domain + security keywords';\n\n// 2) SOCIAL (non-security)\n} else if (isSocialDomain && !containsAny(securityKw) &&\n  (containsAny(socialKw) || e.signals?.isNoReply || e.signals?.isBulk || e.signals?.hasListUnsubscribe)) {\n  ruleCategory = 'social';\n  ruleReason = 'Social domain + notification signals';\n\n// 3) PROMOTIONS (marketing/newsletters)\n} else if (!containsAny(securityKw) && (containsAny(promoKw) || isLikelyPromoSender)) {\n  ruleCategory = 'promotions';\n  ruleReason = 'Marketing/promotional signals detected';\n\n}\n\nif (ruleCategory==null) {\n  ruleCategory = 'uncertain'\n  ruleReason = 'No rule match';\n}\n\nreturn {\n  ...e,\n  rule: {\n    category: ruleCategory, // 'security' | 'social' | 'promotions' | null\n    reason: ruleReason\n  }\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1152,
+        -304
+      ],
+      "id": "1d511517-0693-41e8-8fef-4fdd0c49ff13",
+      "name": "Rule Precheck"
+    },
+    {
+      "parameters": {
+        "resource": "label",
+        "returnAll": true
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        -928,
+        -304
+      ],
+      "id": "41c42756-33e2-4b26-9fd6-586cb19d6637",
+      "name": "Get many labels",
+      "webhookId": "dfbb6614-a0a4-4149-be3e-f70b7c6980ae",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "IHQeKQ6QXxp16hLv",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// We need two things in one place:\n// 1) the original email object from Rule Precheck\n// 2) the list of existing label names from Get many labels (multiple items)\n\n// Pull the email from Rule Precheck node output:\nconst email = $node[\"Rule Precheck\"].json;\n\n// Collect all label names from current input items (Get many labels)\nconst labels = $input.all()\n  .map(it => (it.json?.name || '').toLowerCase())\n  .filter(Boolean);\n\nreturn [{\n  json: {\n    email,\n    labels\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -704,
+        -304
+      ],
+      "id": "053033e9-e6c5-4685-a2ae-10f56fc3f01b",
+      "name": "Pack email and labels"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const required = [\n  'security',\n  'social',\n  'promotions',\n  'sent_by_agent'\n];\n\nconst existing = new Set(($json.labels || []).map(x => x.toLowerCase()));\n\nconst missing = required.filter(l => !existing.has(l.toLowerCase()));\n\nreturn {\n  ...$json,\n  required,\n  missing,\n  missingCount: missing.length,\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -480,
+        -304
+      ],
+      "id": "5a6ce234-f880-4536-b878-984066ad3732",
+      "name": "Find missing labels"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "919188c1-f885-4f5e-944c-ab787980ca56",
+              "leftValue": "={{$json.missingCount}}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -256,
+        -304
+      ],
+      "id": "fe20aaa8-1e24-44e5-95e8-23ff17d6f481",
+      "name": "If : Missing labels"
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first();\nconst data = item.json || {};\n\nconst missing = Array.isArray(data.missing) ? data.missing : [];\nconst email = data.email || {};\n\nconst messageId = email.id;   // <-- this is what we need later\nconst threadId  = email.threadId;\n\nif (!messageId || missing.length === 0) return [];\n\nreturn missing.map((name) => ({\n  json: {\n    name,\n    messageId,\n    threadId\n  }\n}));\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        16,
+        -320
+      ],
+      "id": "43349df9-c0e0-44d5-99f2-74773332c747",
+      "name": "Missing → items"
+    },
+    {
+      "parameters": {
+        "resource": "label",
+        "operation": "create",
+        "name": "={{$json.name}}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        256,
+        -320
+      ],
+      "id": "3cd40d30-6b28-4235-8198-9ab0cc66b882",
+      "name": "Create a label",
+      "webhookId": "78b49403-c9b3-42d2-a5d9-31ae1772427b",
+      "alwaysOutputData": true,
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "IHQeKQ6QXxp16hLv",
+          "name": "Gmail account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "resource": "label",
+        "returnAll": true
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        528,
+        -320
+      ],
+      "id": "5960ac93-c91a-4598-8185-2aa89352b013",
+      "name": "RE: Get many labels",
+      "webhookId": "dfbb6614-a0a4-4149-be3e-f70b7c6980ae",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "IHQeKQ6QXxp16hLv",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// We need two things in one place:\n// 1) the original email object from Rule Precheck\n// 2) the list of existing label names from Get many labels (multiple items)\n\n// Pull the email from Rule Precheck node output:\nconst email = $node[\"Rule Precheck\"].json;\n\n// Collect all label names from current input items (Get many labels)\nconst labels = $input.all()\n  .map(it => (it.json?.name || '').toLowerCase())\n  .filter(Boolean);\n\nreturn [{\n  json: {\n    email,\n    labels\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        800,
+        -320
+      ],
+      "id": "29e7c104-ace5-45cb-8752-a5e86b3b5cbf",
+      "name": "RE: Pack email and labels"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const required = [\n  'security',\n  'social',\n  'promotions',\n  'reply',\n  'review',\n  'sent_by_agent',\n  'declined'\n];\n\nconst existing = new Set(($json.labels || []).map(x => x.toLowerCase()));\n\nconst missing = required.filter(l => !existing.has(l.toLowerCase()));\n\nreturn {\n  ...$json,\n  required,\n  missing,\n  missingCount: missing.length,\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1088,
+        -320
+      ],
+      "id": "ec29c51c-bcf2-49c4-86ae-e5336f15d21f",
+      "name": "RE: Find missing labels"
+    },
+    {
+      "parameters": {
+        "chatId": "1777147688",
+        "text": "=🚨 Security email received (notify only)\n\nFrom: {{$json.email.fromName}} <{{$json.email.fromEmail}}>\nTo: {{$json.email.to}}\nSubject: {{$json.email.subject}}\nDate: {{$json.email.date}}\n\n--- Body ---\n{{$json.email.bodyText}}\n\nID: {{$json.email.id}}\n",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        416,
+        0
+      ],
+      "id": "4e5d67a5-9d58-453b-aa1c-7a3773249cc1",
+      "name": "Security Email Notifications",
+      "webhookId": "8ba41bc8-2d0c-46e4-8e94-e9386d0c48ed",
+      "credentials": {
+        "telegramApi": {
+          "id": "ahkC02km91yNlFCN",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "addLabels",
+        "messageId": "={{$json.email.id}}",
+        "labelIds": [
+          "Label_1"
+        ]
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        -176,
+        0
+      ],
+      "id": "261918ab-f6b4-419d-9554-0472519fe486",
+      "name": "Add label: security",
+      "webhookId": "2083e515-74ab-4c34-b1f7-2f1eef9c7bf6",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "IHQeKQ6QXxp16hLv",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "markAsRead",
+        "messageId": "={{$json.id}}"
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        128,
+        0
+      ],
+      "id": "45ed2185-0969-498b-adf0-221686be9fd0",
+      "name": "Mark security emails as read",
+      "webhookId": "9d6cb936-41f0-42d8-85c4-0634e9d87ed0",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "IHQeKQ6QXxp16hLv",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "addLabels",
+        "messageId": "={{$json.email.id}}",
+        "labelIds": [
+          "Label_2"
+        ]
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        -160,
+        224
+      ],
+      "id": "36c5539c-da82-4fe8-a5d3-edd0222f1bef",
+      "name": "Add label: social",
+      "webhookId": "850ad475-e72f-40ea-aeef-83fad1dee3e4",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "IHQeKQ6QXxp16hLv",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "markAsRead",
+        "messageId": "={{$json.id}}"
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        144,
+        224
+      ],
+      "id": "2f4c929d-047b-4356-b01d-44b8c814c7d6",
+      "name": "Mark social message as read",
+      "webhookId": "ca8b4d81-3b35-4a95-af9c-03d2c93ae37e",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "IHQeKQ6QXxp16hLv",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "addLabels",
+        "messageId": "={{$json.email.id}}",
+        "labelIds": [
+          "Label_3"
+        ]
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        -144,
+        448
+      ],
+      "id": "d4eab726-e979-4c70-81a8-cd510e084e76",
+      "name": "Add label: promotions",
+      "webhookId": "29bac7fa-bc10-4274-bff9-f6b97079cc93",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "IHQeKQ6QXxp16hLv",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "markAsRead",
+        "messageId": "={{$json.id}}"
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        144,
+        448
+      ],
+      "id": "39fa8acd-8aba-4415-b987-949878c44130",
+      "name": "Mark promotional message as read",
+      "webhookId": "55af443e-97a4-459b-b71f-84e55225f0c6",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "IHQeKQ6QXxp16hLv",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "models/gemini-2.5-flash",
+          "mode": "list",
+          "cachedResultName": "models/gemini-2.5-flash"
+        },
+        "messages": {
+          "values": [
+            {
+              "content": "=You are an email triage classifier.\n\nReturn ONLY valid JSON (no markdown, no extra text) exactly in this schema:\n{\n  \"category\": \"security|social|promotions|reply\",\n  \"confidence\": 0.0,\n  \"reason\": \"short\"\n}\n\nIf you are unsure, still choose the best category from the allowed list and set confidence < 0.60.\n\nDefinitions (category must be one of these, not null):\n- security: login alerts, password reset, OTP/verification codes, suspicious activity, account security warnings.\n- social: social platform notifications (likes, follows, comments, mentions), not security-related.\n- promotions: marketing/newsletters/sales/discounts/product announcements/bulk mail.\n- reply: a real person expects a response/action.\n\nConfidence rule:\n- If not fairly sure, set confidence < 0.60.\n\nEMAIL:\nFROM: {{$json.email.fromName}} <{{$json.email.fromEmail}}>\nTO: {{$json.email.to}}\nSUBJECT: {{$json.email.subject}}\n\nBODY:\n{{$json.email.bodyText}}"
+            }
+          ]
+        },
+        "jsonOutput": true,
+        "builtInTools": {},
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1.1,
+      "position": [
+        80,
+        640
+      ],
+      "id": "3ff77444-e95e-422b-8f68-2cb71c15ee03",
+      "name": "Message a model",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "LDraovauLf2Wq1AE",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "bf538edc-fc28-40c1-9bb1-8627d5b10b04",
+              "name": "email",
+              "value": "={{$json.email}}",
+              "type": "object"
+            },
+            {
+              "id": "c6c5e495-3b40-442a-a9c1-bb97642b75e5",
+              "name": "messageId",
+              "value": "={{$json.email.id}}",
+              "type": "string"
+            },
+            {
+              "id": "335ae6f9-4feb-49b1-a673-b05c464fe225",
+              "name": "threadId",
+              "value": "={{$json.email.threadId}}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -128,
+        688
+      ],
+      "id": "e37721de-e75e-4bae-9fe3-f48c940795b6",
+      "name": "Keep email"
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first().json;\nconst rawText = item?.content?.parts?.[0]?.text ?? \"\";\n\n// Allowed categories only\nconst ALLOWED = new Set([\"security\", \"social\", \"promotions\", \"reply\"]);\n\n// Fallback when parsing fails or category is invalid\nconst FALLBACK_CATEGORY = \"reply\";\nconst FALLBACK_CONFIDENCE = 0.2; // low confidence\n\nlet parsed = null;\n\n// 1) Try direct JSON parse\ntry {\n  parsed = JSON.parse(rawText);\n} catch {\n  // 2) Try extracting a JSON object substring\n  const start = rawText.indexOf(\"{\");\n  const end = rawText.lastIndexOf(\"}\");\n  if (start >= 0 && end > start) {\n    try {\n      parsed = JSON.parse(rawText.slice(start, end + 1));\n    } catch {\n      parsed = null;\n    }\n  }\n}\n\n// Normalize + validate\nconst category = String(parsed?.category ?? \"\").toLowerCase().trim();\nconst confidence = Number(parsed?.confidence);\nconst reason = String(parsed?.reason ?? \"\").trim();\n\nconst safeCategory = ALLOWED.has(category) ? category : FALLBACK_CATEGORY;\n\n// Confidence: if invalid, use fallback confidence. Clamp 0..1\nlet safeConfidence = Number.isFinite(confidence) ? confidence : FALLBACK_CONFIDENCE;\nsafeConfidence = Math.max(0, Math.min(1, safeConfidence));\n\n// If we had to fallback, force low confidence\nif (!ALLOWED.has(category)) {\n  safeConfidence = FALLBACK_CONFIDENCE;\n}\n\nconst safeReason =\n  reason ||\n  (parsed\n    ? \"Missing/empty reason.\"\n    : \"Classifier output was not valid JSON; used fallback category reply.\");\n\nreturn [\n  {\n    json: {\n      category: safeCategory,\n      confidence: safeConfidence,\n      reason: safeReason,\n    },\n  },\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        640
+      ],
+      "id": "7187b5d1-2229-4df4-b0a5-7761030f0e7b",
+      "name": "Parse Gemini JSON"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        240,
+        880
+      ],
+      "id": "653473b8-0b6d-4c25-b10a-0cb6ed45cdfd",
+      "name": "Merge"
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first().json;\n\n// Normalize category text\nlet classifierCategory = String(item.category)\n  .toLowerCase()\n  .trim();\n\n// Normalize common variants/synonyms\nif ([\"promotion\", \"promotions\"].includes(classifierCategory)) {\n  classifierCategory = \"promotions\";\n}\nif ([\"secure\", \"security\"].includes(classifierCategory)) {\n  classifierCategory = \"security\";\n}\n\nreturn [\n  {\n    json: {\n      ...item,\n      classifierCategory,\n    },\n  },\n];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        432,
+        880
+      ],
+      "id": "c7e03ef3-aa71-40e7-9436-866fbd912478",
+      "name": "Final Classifier Category"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{$json.classifierCategory}}",
+                    "rightValue": "security",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "e74f7cdd-3c60-4df9-a4f5-677fc3149bb0"
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "412b3589-9fb7-4300-9650-00e841a3b0eb",
+                    "leftValue": "={{$json.classifierCategory}}",
+                    "rightValue": "social",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "0b10ee51-b03a-4f60-87f8-38a231204356",
+                    "leftValue": "={{$json.classifierCategory}}",
+                    "rightValue": "promotions",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "f1920abb-5d48-4276-b29c-17a1637ddc39",
+                    "leftValue": "={{$json.classifierCategory}}",
+                    "rightValue": "reply",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        -864,
+        1216
+      ],
+      "id": "3e70f216-08d4-4ec7-aa57-0d7374b663a9",
+      "name": "route by classifierCategory"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{$json.email.rule.category}}",
+                    "rightValue": "security",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "8a53c07c-798d-4a9f-bc24-321b940358e7"
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "d73f9c95-ea74-451d-bd18-6db1eda79792",
+                    "leftValue": "={{$json.email.rule.category}}",
+                    "rightValue": "social",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "5fe78590-fc73-4583-ac6c-a5d42ae78057",
+                    "leftValue": "={{$json.email.rule.category}}",
+                    "rightValue": "promotions",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "c4e3944a-62f5-4281-b616-d763cf37bd62",
+                    "leftValue": "={{$json.email.rule.category}}",
+                    "rightValue": "uncertain",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        -848,
+        320
+      ],
+      "id": "b6d091a7-b777-4431-82a5-d64b4d908e94",
+      "name": "route by Rule Precheck"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=CRITICAL EXECUTION RULE:\n- You MUST select EXACTLY ONE branch based on the condition.\n- You MUST execute ONLY the instructions of the matched branch.\n- You MUST ignore instructions from all other branches.\n\n\n\nMASTER MODE ROUTING (DO NOT BREAK JSON RULES):\n\n- Determine action from input: {{$json.action}}\n- If action is missing or empty, treat it as draft generation (Branch A).\n\nYou MUST follow exactly one of these branches:\n\nBranch A — Draft Generation\n\nCondition: action != \"improve_more\" && action != \"edit\"\n(actions can be other values too; only treat edit and improve_more specially)\n\nYou are a professional email reply writer working inside an automated workflow.\n\nYour task is to draft a clear, polite, and ready-to-send email reply based on the provided email context.\n\nSTRICT RULES (MANDATORY):\n- Return ONLY valid JSON\n- Follow the EXACT output schema provided by the system\n- Do NOT include markdown, explanations, comments, or extra text\n- Do NOT wrap the JSON in code blocks\n- Every required field MUST be present\n- Arrays must always be arrays (never null)\n- Strings must never be null (use empty string if needed)\n\nCONTENT RULES:\n- Keep the reply concise, professional, and polite\n- Assume the recipient is human\n- If the email does not explicitly request a reply, still write a polite acknowledgment\n- If any information is unclear or missing, add clear clarifying questions to the \"questions\" array\n- Do NOT invent facts or commitments\n- Do NOT ask unnecessary questions\n\nSALUTATION RULES:\n- If sender name is available, salutation MUST be exactly: \"Dear {{SENDER_NAME}},\"\n- If sender name is missing or empty, salutation MUST be exactly: \"Hello,\"\n\nCLOSING RULES:\n- Choose an appropriate sign-off based on the tone of the sender and the email content\n- Use ONLY one of these closings (exactly as written):\n  \"Best regards,\"\n  \"Warm regards,\"\n  \"Sincerely,\"\n  \"Kind regards,\"\n  \"Thanks,\"\n- Put the chosen value in the \"closing\" field only (do not add my name there)\n\nAPPROVAL POLICY (CRITICAL):\n- ALWAYS set \"needs_user_approval\" to true\n- No exception, regardless of confidence or simplicity\n\nCONFIDENCE FIELD:\n- Set \"confidence\" as a number between 0 and 1\n- Use higher confidence only when the reply intent is very clear\n\nEMAIL CONTEXT:\nFrom: {{$json.email.fromName}} <{{$json.email.fromEmail}}>\nSubject: {{$json.email.subject}}\nBody:\n{{$json.email.bodyText}}\n\nOUTPUT INSTRUCTIONS:\n- \"draft\" must contain ONLY the email body text (do NOT include salutation or closing)\n- \"subject\" should normally be \"Re: <original subject>\" unless already starts with \"Re:\"\n- \"key_points\" must be a short bullet-style list (strings)\n- \"questions\" must be an array (empty if none)\n\nSCHEMA INTEGRITY RULE:\n- All output fields required by the schema MUST be present, even if unchanged or empty.\n\nREADABILITY POLICY (MANDATORY WORKFLOW):\n- Create an initial response JSON.\n- Call the tool readability_check using ONLY the value of \"draft\" as the tool input.\n- If the tool result has score < 60:\n  - Rewrite ONLY \"draft\" to improve readability and clarity (same meaning).\n  - Do NOT change salutation / closing unless necessary.\n  - Do NOT add new facts or commitments.\n  - Re-run readability_check once more using the updated \"draft\".\n- Do not return until readability ≥ 60. \n- Return the final JSON with the improved \"draft\".\n- You MUST call the tool readability_check at least once and the score > 60 (If score < 60, improve the readability and call the readability_check tool again) before returning the final JSON. Do not skip tool calls.\n- The readability_check tool returns a JSON string. You MUST parse it and store it in the final output as readability.\n- After the second run (if rewritten), set readability to the latest tool result.\n\n\nBranch B — Edit Existing Draft\n\nCondition: action == \"edit\"\n\nYou are a professional email reply editor working inside an automated workflow.\n\nYour task is to revise an EXISTING draft reply using the user’s feedback.\n\nSTRICT RULES (MANDATORY):\n- Return ONLY valid JSON\n- Follow the EXACT output schema provided by the system\n- Do NOT include markdown, explanations, comments, or extra text\n- Do NOT wrap the JSON in code blocks\n- Every required field MUST be present\n- Arrays must always be arrays (never null)\n- Strings must never be null (use empty string if needed)\n\nCONTENT RULES:\n- Apply the user feedback precisely\n- Keep the reply concise, professional, and polite\n- Do NOT invent facts or commitments\n- If something is unclear in the feedback, add clarifying questions to the \"questions\" array\n- Do NOT ask unnecessary questions\n\nSALUTATION RULES:\n- If sender name is available, salutation MUST be exactly: \"Dear {{SENDER_NAME}},\"\n- If sender name is missing or empty, salutation MUST be exactly: \"Hello,\"\n\nCLOSING RULES:\n- Choose an appropriate sign-off based on the tone of the sender and the email content\n- Use ONLY one of these closings (exactly as written):\n  \"Best regards,\"\n  \"Warm regards,\"\n  \"Sincerely,\"\n  \"Kind regards,\"\n  \"Thanks,\"\n- Put the chosen value in the \"closing\" field only (do not add my name there)\n\nAPPROVAL POLICY (CRITICAL):\n- ALWAYS set \"needs_user_approval\" to true\n\nCONFIDENCE FIELD:\n- Set \"confidence\" as a number between 0 and 1\n- Use higher confidence only when the edit intent is very clear\n\nINPUTS FOR THIS BRANCH:\n- Existing draft (this is what must be edited):\n  {{$json.reply}}\n- User edit feedback (instructions from human):\n  {{$json.editFeedback}}\n\nEMAIL CONTEXT (use ONLY if available; do not fail if missing):\nFrom: {{$json.email?.fromName || \"\"}} <{{$json.email?.fromEmail || \"\"}}>\nSubject: {{$json.email?.subject || \"\"}}\nBody:\n{{$json.email?.bodyText || \"\"}}\n\nOUTPUT INSTRUCTIONS:\n- \"draft\" must contain ONLY the email body text (do NOT include salutation or closing)\n- Your \"draft\" MUST be the revised version of the existing draft, applying the feedback\n- \"subject\" should normally be \"Re: <original subject>\" unless already starts with \"Re:\"\n- If original subject is missing, set subject to \"Re:\"\n- \"key_points\" must reflect the revised reply (short bullet-style strings)\n- \"questions\" must be an array (empty if none)\n\nSCHEMA INTEGRITY RULE:\n- All output fields required by the schema MUST be present, even if unchanged or empty.\n\nREADABILITY POLICY (MANDATORY WORKFLOW):\n- Create an initial response JSON.\n- Call the tool readability_check using ONLY the value of \"draft\" as the tool input.\n- If the tool result has score < 60:\n  - Rewrite ONLY \"draft\" to improve readability and clarity (same meaning).\n  - Do NOT change salutation / closing unless necessary.\n  - Do NOT add new facts or commitments.\n  - Re-run readability_check once more using the updated \"draft\".\n- Do not return until readability ≥ 60. \n- Return the final JSON with the improved \"draft\".\n- You MUST call the tool readability_check at least once and the score > 60 (If score < 60, improve the readability and call the readability_check tool again) before returning the final JSON. Do not skip tool calls.\n- The readability_check tool returns a JSON string. You MUST parse it and store it in the final output as readability.\n- After the second run (if rewritten), set readability to the latest tool result.\n\n\nBranch C — Improve More (no human feedback, just polish)\n\nCondition: action == \"improve_more\"\n\nYou are a professional email reply improver working inside an automated workflow.\n\nYour task is to improve an EXISTING draft reply to be clearer, more natural, and more readable, while keeping the SAME meaning and intent.\n\nSTRICT RULES (MANDATORY):\n- Return ONLY valid JSON\n- Follow the EXACT output schema provided by the system\n- Do NOT include markdown, explanations, comments, or extra text\n- Do NOT wrap the JSON in code blocks\n- Every required field MUST be present\n- Arrays must always be arrays (never null)\n- Strings must never be null (use empty string if needed)\n\nCONTENT RULES:\n- Improve clarity, tone, and readability\n- Keep it concise, professional, and polite\n- Preserve meaning; do NOT change commitments or add facts\n- If something is unclear/missing, add clarifying questions to the \"questions\" array\n- Do NOT ask unnecessary questions\n\nSALUTATION RULES:\n- If sender name is available, salutation MUST be exactly: \"Dear {{SENDER_NAME}},\"\n- If sender name is missing or empty, salutation MUST be exactly: \"Hello,\"\n\nCLOSING RULES:\n- Choose an appropriate sign-off based on the tone of the sender and the email content\n- Use ONLY one of these closings (exactly as written):\n  \"Best regards,\"\n  \"Warm regards,\"\n  \"Sincerely,\"\n  \"Kind regards,\"\n  \"Thanks,\"\n- Put the chosen value in the \"closing\" field only (do not add my name there)\n\nAPPROVAL POLICY (CRITICAL):\n- ALWAYS set \"needs_user_approval\" to true\n\nCONFIDENCE FIELD:\n- Set \"confidence\" as a number between 0 and 1\n- Use higher confidence only when the reply intent is very clear\n\nINPUTS FOR THIS BRANCH:\n- Existing draft (improve this):\n  {{$json.reply}}\n\nEMAIL CONTEXT (use ONLY if available; do not fail if missing):\nFrom: {{$json.email?.fromName || \"\"}} <{{$json.email?.fromEmail || \"\"}}>\nSubject: {{$json.email?.subject || \"\"}}\nBody:\n{{$json.email?.bodyText || \"\"}}\n\nOUTPUT INSTRUCTIONS:\n- \"draft\" must contain ONLY the email body text (do NOT include salutation or closing)\n- \"draft\" MUST be an improved version of the existing draft\n- \"subject\" should normally be \"Re: <original subject>\" unless already starts with \"Re:\"\n- If original subject is missing, set subject to \"Re:\"\n- \"key_points\" must reflect the improved reply (short bullet-style strings)\n- \"questions\" must be an array (empty if none)\n\nSCHEMA INTEGRITY RULE:\n- All output fields required by the schema MUST be present, even if unchanged or empty.\n\nREADABILITY POLICY (MANDATORY WORKFLOW):\n- Create an initial response JSON.\n- Call the tool readability_check using ONLY the value of \"draft\" as the tool input.\n- If the tool result has score < 60:\n  - Rewrite ONLY \"draft\" to improve readability and clarity (same meaning).\n  - Do NOT change salutation / closing unless necessary.\n  - Do NOT add new facts or commitments.\n  - Re-run readability_check once more using the updated \"draft\".\n- Do not return until readability ≥ 60. \n- Return the final JSON with the improved \"draft\".\n- You MUST call the tool readability_check at least once and the score > 60 (If score < 60, improve the readability and call the readability_check tool again) before returning the final JSON. Do not skip tool calls.\n- The readability_check tool returns a JSON string. You MUST parse it and store it in the final output as readability.\n- After the second run (if rewritten), set readability to the latest tool result.\n",
+        "hasOutputParser": true,
+        "needsFallback": true,
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        96,
+        1120
+      ],
+      "id": "270edfd0-968b-4c8d-983c-0eb982cd7133",
+      "name": "AI Agent"
+    },
+    {
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"type\": \"object\",\n  \"additionalProperties\": false,\n  \"required\": [\n    \"subject\",\n    \"draft\",\n    \"salutation\",\n    \"closing\",\n    \"key_points\",\n    \"questions\",\n    \"confidence\",\n    \"needs_user_approval\"\n  ],\n  \"properties\": {\n    \"subject\": { \"type\": \"string\" },\n    \"draft\": { \"type\": \"string\" },\n    \"salutation\": { \"type\": \"string\" },\n    \"closing\": { \"type\": \"string\" },\n    \"key_points\": { \"type\": \"array\", \"items\": { \"type\": \"string\" } },\n    \"questions\": { \"type\": \"array\", \"items\": { \"type\": \"string\" } },\n    \"confidence\": { \"type\": \"number\", \"minimum\": 0, \"maximum\": 1 },\n    \"needs_user_approval\": { \"type\": \"boolean\" },\n    \"tone\": { \"type\": \"string\" },\n\n    \"readability\": {\n      \"type\": \"object\",\n      \"additionalProperties\": false,\n      \"required\": [\"score\", \"threshold\", \"needs_improvement\", \"grade_hint\", \"stats\"],\n      \"properties\": {\n        \"score\": { \"type\": \"number\" },\n        \"threshold\": { \"type\": \"number\" },\n        \"needs_improvement\": { \"type\": \"boolean\" },\n        \"grade_hint\": { \"type\": \"string\" },\n        \"stats\": {\n          \"type\": \"object\",\n          \"additionalProperties\": false,\n          \"required\": [\n            \"sentences\",\n            \"words\",\n            \"syllables\",\n            \"avg_words_per_sentence\",\n            \"avg_syllables_per_word\"\n          ],\n          \"properties\": {\n            \"sentences\": { \"type\": \"number\" },\n            \"words\": { \"type\": \"number\" },\n            \"syllables\": { \"type\": \"number\" },\n            \"avg_words_per_sentence\": { \"type\": \"number\" },\n            \"avg_syllables_per_word\": { \"type\": \"number\" }\n          }\n        }\n      }\n    }\n  }\n}\n",
+        "autoFix": true
+      },
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        384,
+        1456
+      ],
+      "id": "1de994f0-5258-40bd-b654-8582470c454d",
+      "name": "Structured Output Parser"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        -128,
+        1424
+      ],
+      "id": "a1461e94-39fb-4194-923b-14f3afa9d72d",
+      "name": "Google Gemini Chat Model",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "LDraovauLf2Wq1AE",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        384,
+        1616
+      ],
+      "id": "12e2a65f-aafa-4b4f-b539-58dffc4ffdda",
+      "name": "Google Gemini Chat Model1",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "LDraovauLf2Wq1AE",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": "qwen/qwen3-next-80b-a3b-instruct:free",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+      "typeVersion": 1,
+      "position": [
+        80,
+        1408
+      ],
+      "id": "47a6b4ca-aa3e-4ca7-b53a-ba1feaa988d7",
+      "name": "OpenRouter Chat Model",
+      "credentials": {
+        "openRouterApi": {
+          "id": "M9kdUeqz5XHhr5cV",
+          "name": "OpenRouter account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "description": " n8n AI Agent - readability_check Code Tool\n * Purpose: Compute readability (Flesch Reading Ease, 0–100) for MAIN MESSAGE ONLY.\n \n * Input: The tool receives the user-provided string in `query`.\n * Output: Must return a SINGLE STRING. We'll return JSON as a string.\n \n * POLICY:\n  - Threshold = 60. If score < 60 => needs_improvement = true",
+        "jsCode": "const THRESHOLD = 60; // readability threshold (0..100)\n\n// The tool input comes in as: $json.query\nconst raw = (typeof $json.query === 'string') ? $json.query : '';\n\nfunction stripHtml(input = \"\") {\n  return String(input)\n    .replace(/<style[\\s\\S]*?<\\/style>/gi, \" \")\n    .replace(/<script[\\s\\S]*?<\\/script>/gi, \" \")\n    .replace(/<[^>]+>/g, \" \")\n    .replace(/&nbsp;|&#160;/gi, \" \")\n    .replace(/&amp;/gi, \"&\")\n    .replace(/&lt;/gi, \"<\")\n    .replace(/&gt;/gi, \">\")\n    .replace(/&quot;/gi, '\"')\n    .replace(/&#39;/gi, \"'\")\n    .replace(/\\s+/g, \" \")\n    .trim();\n}\n\nfunction normalizeText(input = \"\") {\n  return stripHtml(input)\n    .replace(/[“”]/g, '\"')\n    .replace(/[‘’]/g, \"'\")\n    .replace(/\\s+/g, \" \")\n    .trim();\n}\n\nfunction countSentences(text = \"\") {\n  const t = text.trim();\n  if (!t) return 0;\n  const matches = t.match(/[.!?]+(?=\\s|$)/g);\n  const n = matches ? matches.length : 0;\n  return Math.max(1, n);\n}\n\nfunction tokenizeWords(text = \"\") {\n  const cleaned = text\n    .toLowerCase()\n    .replace(/[^a-z0-9'\\s-]/g, \" \")\n    .replace(/[-]/g, \" \")\n    .replace(/\\s+/g, \" \")\n    .trim();\n  if (!cleaned) return [];\n  return cleaned.split(\" \").filter(Boolean);\n}\n\nfunction countSyllablesInWord(word = \"\") {\n  let w = String(word).toLowerCase().replace(/[^a-z]/g, \"\");\n  if (!w) return 0;\n  if (w.length <= 3) return 1;\n\n  if (w.endsWith(\"e\")) {\n    if (!(w.endsWith(\"le\") && w.length > 2 && !/[aeiouy]/.test(w[w.length - 3]))) {\n      w = w.slice(0, -1);\n    }\n  }\n\n  const groups = w.match(/[aeiouy]+/g);\n  let count = groups ? groups.length : 0;\n\n  if (w.endsWith(\"ed\") && !/(ted|ded)$/.test(w)) count -= 1;\n  if (w.endsWith(\"es\") && !/(ses|xes|zes|ches|shes)$/.test(w)) count -= 1;\n\n  return Math.max(1, count);\n}\n\nfunction fleschReadingEase(sentences, words, syllables) {\n  if (!sentences || !words) return 0;\n  const score =\n    206.835 -\n    1.015 * (words / sentences) -\n    84.6 * (syllables / words);\n  return Math.max(0, Math.min(100, score));\n}\n\nfunction gradeHint(score) {\n  if (score >= 90) return \"Very easy\";\n  if (score >= 80) return \"Easy\";\n  if (score >= 70) return \"Fairly easy\";\n  if (score >= 60) return \"Standard\";\n  if (score >= 50) return \"Fairly difficult\";\n  if (score >= 30) return \"Difficult\";\n  return \"Very difficult\";\n}\n\nconst text = normalizeText(raw);\n\nif (!text) {\n  return JSON.stringify({\n    score: 0,\n    threshold: THRESHOLD,\n    needs_improvement: true,\n    grade_hint: \"No text\",\n    stats: {\n      sentences: 0,\n      words: 0,\n      syllables: 0,\n      avg_words_per_sentence: 0,\n      avg_syllables_per_word: 0\n    }\n  });\n}\n\nconst sentences = countSentences(text);\nconst wordsArr = tokenizeWords(text);\nconst words = wordsArr.length;\n\nlet syllables = 0;\nfor (const w of wordsArr) syllables += countSyllablesInWord(w);\n\nconst score = fleschReadingEase(sentences, words, syllables);\n\nreturn JSON.stringify({\n  score: Number(score.toFixed(2)),\n  threshold: THRESHOLD,\n  needs_improvement: score < THRESHOLD,\n  grade_hint: gradeHint(score),\n  stats: {\n    sentences,\n    words,\n    syllables,\n    avg_words_per_sentence: Number((words / sentences).toFixed(2)),\n    avg_syllables_per_word: Number((syllables / words).toFixed(3))\n  }\n});\n",
+        "specifyInputSchema": true,
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"query\": { \"type\": \"string\" }\n  },\n  \"required\": [\"query\"]\n}\n"
+      },
+      "type": "@n8n/n8n-nodes-langchain.toolCode",
+      "typeVersion": 1.3,
+      "position": [
+        224,
+        1360
+      ],
+      "id": "2edea71f-99b9-4174-8040-aed9cbeeb55e",
+      "name": "readability_check"
+    },
+    {
+      "parameters": {
+        "jsCode": "const item = $input.first().json;\nconst o = item.output || {};\n\nconst s = (v) => (typeof v === 'string' ? v : '');\nconst senderName = s(item.email?.fromName).trim();\n\n// ---------- 1) Salutation rule ----------\nconst salutation = senderName ? `Dear ${senderName},` : 'Hello,';\n\n// ---------- 2) Closing rule (sanitize) ----------\nconst allowedClosings = new Set([\n  'Best regards,',\n  'Warm regards,',\n  'Sincerely,',\n  'Kind regards,',\n  'Thanks,',\n]);\n\nlet closing = s(o.closing).trim();\nif (!allowedClosings.has(closing)) closing = 'Best regards,';\n\n// ---------- 3) Body ----------\nconst draftBody = s(o.draft).trim();\n\n// ---------- 4) Signature HTML ----------\nconst signatureHtml = `\n<div style=\"margin-top:10px\">\n  <div style=\"margin-top:10px\">\n    <img src=\"https://drive.google.com/uc?export=view&id=1SqM5LGJXu37ICN_rLxe7gSpdc3IZwPCn\" alt=\"Signature\" width=\"220\" />\n  </div>\n  <div><strong>Md. Rifat Aknda</strong></div>\n  <div>Student, ULAB</div>\n  <div><a href=\"mailto:rifat.aknda.cse@ulab.edu.bd\">rifat.aknda.cse@ulab.edu.bd</a></div>\n</div>\n`.trim();\n\n// ---------- helpers ----------\nconst escapeHtml = (str = '') =>\n  String(str)\n    .replaceAll('&', '&amp;')\n    .replaceAll('<', '&lt;')\n    .replaceAll('>', '&gt;')\n    .replaceAll('\"', '&quot;')\n    .replaceAll(\"'\", '&#39;');\n\n// ---------- 5) Full text (Telegram preview) ----------\nconst fullText =\n  `${salutation}\\n\\n` +\n  `${draftBody}\\n\\n` +\n  `${closing}\\n` +\n  `Md. Rifat Aknda`;\n\n// ---------- 6) HTML body (for Gmail reply/send) ----------\nconst bodyHtml =\n  `<div>${escapeHtml(salutation)}</div><br/>` +\n  `<div>${escapeHtml(draftBody).replaceAll('\\n', '<br/>')}</div><br/>` +\n  `<div>${escapeHtml(closing)}<br/>Md. Rifat Aknda</div><br/>` +\n  signatureHtml;\n\n// ---------- 7) Subject normalize ----------\nconst originalSubject = s(item.email?.subject).trim();\nlet subject = s(o.subject).trim();\n\nif (!subject) {\n  if (originalSubject) {\n    subject = originalSubject.toLowerCase().startsWith('re:')\n      ? originalSubject\n      : `Re: ${originalSubject}`;\n  } else {\n    subject = 'Re:';\n  }\n}\n\n// ---------- 8) Always approval ----------\nconst needs_user_approval = true;\n\n// ---------- 9) Telegram text + callback payloads ----------\nconst emailId = s(item.messageId || item.email?.id).trim() || 'noid';\nconst threadId = s(item.threadId || item.email?.threadId).trim() || 'nothread';\nconst mkCb = (action) => `${action}|${emailId}|${threadId}`;\n\n\nconst readabilityScore = item.output?.readability?.score ?? 'N/A';\nconst readabilityThreshold = item.output?.readability?.threshold ?? 'N/A';\n\nconst telegramText =\n`📝 Email Reply Review\n\nFrom: ${s(item.email?.fromName)} <${s(item.email?.fromEmail)}>\nSubject: ${subject}\n\n--- Proposed Reply ---\n\n${fullText}\n\nReadability: ${readabilityScore} (threshold ${readabilityThreshold})\nNeeds approval: YES`;\n\nreturn [{\n  json: {\n    ...item,\n    reply: {\n      subject,\n      salutation,\n      closing,\n      draft: draftBody,\n      key_points: Array.isArray(o.key_points) ? o.key_points : [],\n      questions: Array.isArray(o.questions) ? o.questions : [],\n      confidence: typeof o.confidence === 'number' ? o.confidence : 0,\n      needs_user_approval,\n      fullText,\n      bodyHtml,\n      signatureHtml,\n    },\n    telegram: {\n      text: telegramText,\n      callbacks: {\n        approve_send: mkCb('approve_send'),\n        edit: mkCb('edit'),\n        improve_more: mkCb('improve_more'),\n        decline: mkCb('decline'),\n      }\n    },\n  }\n}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        864,
+        1440
+      ],
+      "id": "8c84e102-679d-40f3-a5f8-3efed5a63ef7",
+      "name": "assemble_email_for_review"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "bf538edc-fc28-40c1-9bb1-8627d5b10b04",
+              "name": "email",
+              "value": "={{$json.email}}",
+              "type": "object"
+            },
+            {
+              "id": "c6c5e495-3b40-442a-a9c1-bb97642b75e5",
+              "name": "messageId",
+              "value": "={{$json.email.id}}",
+              "type": "string"
+            },
+            {
+              "id": "335ae6f9-4feb-49b1-a673-b05c464fe225",
+              "name": "threadId",
+              "value": "={{$json.email.threadId}}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -384,
+        1232
+      ],
+      "id": "fbd3616d-8287-4869-8b54-9a393976fef5",
+      "name": "Keep email1"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        560,
+        1264
+      ],
+      "id": "fdd1146a-c3e0-45c3-a77b-eb0db43a4769",
+      "name": "Merge1"
+    },
+    {
+      "parameters": {
+        "updates": [
+          "callback_query"
+        ],
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -1168,
+        2176
+      ],
+      "id": "f369bbc3-0252-4ed5-983c-72589cc37d60",
+      "name": "Telegram Trigger",
+      "webhookId": "a7181b79-01af-4459-93e7-bff6575ecd67",
+      "credentials": {
+        "telegramApi": {
+          "id": "ahkC02km91yNlFCN",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item = $input.item.json;\n\nconst cb = item.callback_query || {};\nconst data = String(cb.data || \"\");\n\n// Expected: action|emailId|threadId\nconst [action = \"\", emailId = \"\", threadId = \"\"] = data.split(\"|\");\n\nreturn {\n  action,\n  emailId,\n  threadId,\n  telegram: {\n    callbackQueryId: cb.id,\n    chatId: cb.message?.chat?.id,\n    messageId: cb.message?.message_id,\n    fromUserId: cb.from?.id,\n    data,\n  },\n  raw: item,\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -864,
+        2176
+      ],
+      "id": "a0e0836e-947d-4607-b9cc-8bc9f5788b60",
+      "name": "parse_telegram_callback"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{$json.action}}",
+                    "rightValue": "approve_send",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "9f815e08-d2e1-4b85-ae33-cef02eb1d9a3"
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "8ab963e8-4f02-4fb2-9054-1fae00f66986",
+                    "leftValue": "={{$json.action}}",
+                    "rightValue": "edit",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "aa6eb735-55c2-407b-9d6c-467edef30481",
+                    "leftValue": "={{$json.action}}",
+                    "rightValue": "improve_more",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "fedb085c-e356-4698-ad54-fa22bcbe4c67",
+                    "leftValue": "={{$json.action}}",
+                    "rightValue": "decline",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        -480,
+        2272
+      ],
+      "id": "d7cd83ac-b2eb-4d8e-a406-d91f5e4501af",
+      "name": "route by action"
+    },
+    {
+      "parameters": {
+        "resource": "table",
+        "operation": "create",
+        "tableName": "email_drafts",
+        "columns": {
+          "column": [
+            {
+              "name": "emailId"
+            },
+            {
+              "name": "threadId"
+            },
+            {
+              "name": "reply"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        976,
+        272
+      ],
+      "id": "565106a6-4dd1-4abd-a6ed-cd257b3578a1",
+      "name": "email_drafts",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "dataTableId": {
+          "__rl": true,
+          "value": "KiCXh7jyPufuopXD",
+          "mode": "list",
+          "cachedResultName": "email_drafts",
+          "cachedResultUrl": "/projects/js4zMBVlvxEpD6Np/datatables/KiCXh7jyPufuopXD"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "emailId",
+              "keyValue": "={{$json.email.id}}"
+            }
+          ]
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "emailId": "={{$json.email.id}}",
+            "threadId": "={{$json.threadId}}",
+            "reply": "={{$json.output.salutation\n + \"\\n\\n\"\n + $json.output.draft\n + \"\\n\\n\"\n + $json.output.closing\n + \"\\nMd. Rifat Aknda\"}}\n"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "emailId",
+              "displayName": "emailId",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "threadId",
+              "displayName": "threadId",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "reply",
+              "displayName": "reply",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        864,
+        1264
+      ],
+      "id": "781053ba-1758-44d6-9459-c8d530454333",
+      "name": "Upsert row(s)"
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "value": "KiCXh7jyPufuopXD",
+          "mode": "list",
+          "cachedResultName": "email_drafts",
+          "cachedResultUrl": "/projects/js4zMBVlvxEpD6Np/datatables/KiCXh7jyPufuopXD"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "emailId",
+              "keyValue": "={{$json.emailId}}"
+            }
+          ]
+        },
+        "limit": 1
+      },
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        -160,
+        1920
+      ],
+      "id": "227526ff-d8fd-4e41-af35-c8ba2eef4152",
+      "name": "Get row(s)"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        528,
+        2016
+      ],
+      "id": "adbe6995-b5f9-42e9-bd42-64827fc97b4c",
+      "name": "Merge2"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "58e56148-aef6-43d3-9bbf-6b30bba75cf6",
+              "name": "editFeedback",
+              "value": "={{\n  $json.data?.text\n  || $json.message?.text\n  || $json.callback_query?.message?.text\n  || $json.text\n  || \"\"\n}}\n",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        416,
+        2432
+      ],
+      "id": "3e94275c-8350-42fa-8ae9-a069ad016958",
+      "name": "Edit Fields"
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "value": "KiCXh7jyPufuopXD",
+          "mode": "list",
+          "cachedResultName": "email_drafts",
+          "cachedResultUrl": "/projects/js4zMBVlvxEpD6Np/datatables/KiCXh7jyPufuopXD"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "emailId",
+              "keyValue": "={{$json.emailId}}"
+            }
+          ]
+        },
+        "limit": 1
+      },
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        656,
+        2272
+      ],
+      "id": "22024dea-b19a-46e7-8da7-72c1add92341",
+      "name": "Get row(s)1"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        864,
+        2432
+      ],
+      "id": "185b81a5-a61c-4036-8c16-2478e48e1308",
+      "name": "Merge3"
+    },
+    {
+      "parameters": {
+        "operation": "get",
+        "dataTableId": {
+          "__rl": true,
+          "value": "KiCXh7jyPufuopXD",
+          "mode": "list",
+          "cachedResultName": "email_drafts",
+          "cachedResultUrl": "/projects/js4zMBVlvxEpD6Np/datatables/KiCXh7jyPufuopXD"
+        },
+        "matchType": "allConditions",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "emailId",
+              "keyValue": "={{$json.emailId}}"
+            }
+          ]
+        },
+        "limit": 1
+      },
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        192,
+        2656
+      ],
+      "id": "f4930128-9394-4a5f-9023-838afe626450",
+      "name": "Get row(s)2"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        416,
+        2816
+      ],
+      "id": "c3dedf3b-7f41-4798-928c-b47c3f85656b",
+      "name": "Merge4"
+    },
+    {
+      "parameters": {
+        "resource": "callback",
+        "queryId": "={{$json.telegram.callbackQueryId}}",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -480,
+        1936
+      ],
+      "id": "57be0a1d-72a9-4e4f-a8a9-261ca694768c",
+      "name": "stop spinner",
+      "webhookId": "0d78b628-b87f-454d-a45a-e651f03fcfb5",
+      "credentials": {
+        "telegramApi": {
+          "id": "ahkC02km91yNlFCN",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "deleteMessage",
+        "chatId": "={{$json.telegram.chatId}}",
+        "messageId": "={{$json.telegram.messageId}}"
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        896,
+        1840
+      ],
+      "id": "eb60a6cf-e76e-436d-a2e9-082f869db77e",
+      "name": "Delete a chat message",
+      "webhookId": "1639fece-b241-47b9-a082-041549a01678",
+      "credentials": {
+        "telegramApi": {
+          "id": "ahkC02km91yNlFCN",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a8575e0d-e937-4cee-8eb5-32455faf52f9",
+              "name": "reviewChatId",
+              "value": "={{$json.telegram.chatId}}",
+              "type": "string"
+            },
+            {
+              "id": "3087faa5-b6d7-48c3-a2e0-dc8e9a96a79e",
+              "name": "reviewMessageId",
+              "value": "={{$json.telegram.messageId}}",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -96,
+        2304
+      ],
+      "id": "aeaa89f2-0ef5-497b-bddc-de25674db9c4",
+      "name": "Edit Fields1"
+    },
+    {
+      "parameters": {
+        "operation": "deleteMessage",
+        "chatId": "={{$json.reviewChatId}}",
+        "messageId": "={{$json.reviewMessageId}}"
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        416,
+        2192
+      ],
+      "id": "80976094-eab6-4ff5-8504-ec9b0874d94d",
+      "name": "Delete a chat message1",
+      "webhookId": "51822174-eeb3-4eb7-8096-9387c3310a51",
+      "credentials": {
+        "telegramApi": {
+          "id": "ahkC02km91yNlFCN",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "deleteMessage",
+        "chatId": "={{$json.telegram.chatId}}",
+        "messageId": "={{$json.telegram.messageId}}"
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1136,
+        2432
+      ],
+      "id": "6a3b040f-29be-4df0-86a5-ef1939ded8c9",
+      "name": "Delete a chat message2",
+      "webhookId": "959fe015-3534-41a4-80a6-7c3e44aed4ce",
+      "credentials": {
+        "telegramApi": {
+          "id": "ahkC02km91yNlFCN",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "deleteMessage",
+        "chatId": "={{$json.telegram.chatId}}",
+        "messageId": "={{$json.telegram.messageId}}"
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        736,
+        2816
+      ],
+      "id": "9cf2899b-07ab-4f23-a8de-70d6fde9562f",
+      "name": "Delete a chat message3",
+      "webhookId": "d5efd1cc-dd1d-45d4-9531-bdcc71e87790",
+      "credentials": {
+        "telegramApi": {
+          "id": "ahkC02km91yNlFCN",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "deleteMessage",
+        "chatId": "={{$json.telegram.chatId}}",
+        "messageId": "={{$json.telegram.messageId}}"
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -176,
+        2704
+      ],
+      "id": "4b43031d-fb5c-413b-91eb-ca29619bae75",
+      "name": "Delete a chat message4",
+      "webhookId": "7227c835-f9fa-47a6-b7f8-f7260edbd78c",
+      "credentials": {
+        "telegramApi": {
+          "id": "ahkC02km91yNlFCN",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "markAsRead",
+        "messageId": "={{ $json.emailId }}"
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        512,
+        1792
+      ],
+      "id": "08d5cd0f-ec30-4187-bce8-07a7d6bed442",
+      "name": "Mark replied message as read",
+      "webhookId": "2ded0c2c-a8be-4fa7-a8d2-2807a2868501",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "IHQeKQ6QXxp16hLv",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "1777147688",
+        "text": "={{$json.telegram.text}}",
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "✅ Approve & Send",
+                    "additionalFields": {
+                      "callback_data": "={{$json.telegram.callbacks.approve_send}}"
+                    }
+                  },
+                  {
+                    "text": "✍️ Edit",
+                    "additionalFields": {
+                      "callback_data": "={{$json.telegram.callbacks.edit}}"
+                    }
+                  },
+                  {
+                    "text": "✨ Improve more",
+                    "additionalFields": {
+                      "callback_data": "={{$json.telegram.callbacks.improve_more}}"
+                    }
+                  },
+                  {
+                    "text": "❌ Decline",
+                    "additionalFields": {
+                      "callback_data": "={{$json.telegram.callbacks.decline}}"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1104,
+        1440
+      ],
+      "id": "bfed92c5-9b8c-4340-b0bd-282dd6ee1fbd",
+      "name": "Send the draft for review",
+      "webhookId": "6902984d-4d80-41a3-8ece-d5a844a732c9",
+      "credentials": {
+        "telegramApi": {
+          "id": "ahkC02km91yNlFCN",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "reply",
+        "messageId": "={{$json.emailId}}",
+        "emailType": "text",
+        "message": "={{$json.reply}}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        208,
+        1920
+      ],
+      "id": "761b5514-67ea-441b-b3bc-89fcfe2a11df",
+      "name": "Reply the approved message",
+      "webhookId": "6e831e1f-7d39-42a8-b1ea-8f681612f34b",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "IHQeKQ6QXxp16hLv",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{$json.telegram.chatId}}",
+        "text": "={{$json.raw.callback_query.message.text + \"\\n\\nStatus: Reply sent.\"}}",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        912,
+        2064
+      ],
+      "id": "a18749d6-6500-411b-a9f8-7855a105a64c",
+      "name": "Message sent confirmation",
+      "webhookId": "5d70a3d3-f963-46c3-8424-9ee0e3fe6318",
+      "credentials": {
+        "telegramApi": {
+          "id": "ahkC02km91yNlFCN",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "sendAndWait",
+        "chatId": "={{$json.telegram.chatId}}",
+        "message": "✍️ What should I change in the draft reply?\nReply with instructions (e.g., shorter, friendlier, add missing detail) or paste your corrected version.",
+        "responseType": "freeText",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        176,
+        2432
+      ],
+      "id": "8643082a-5159-4758-8a51-9a8757d04a2d",
+      "name": "Send message for feedback and wait ",
+      "webhookId": "424e80d6-3717-41a4-bbe3-a217e8dd9193",
+      "credentials": {
+        "telegramApi": {
+          "id": "ahkC02km91yNlFCN",
+          "name": "Telegram account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Gmail Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get a message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get a message": {
+      "main": [
+        [
+          {
+            "node": "Normalize Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Email": {
+      "main": [
+        [
+          {
+            "node": "Rule Precheck",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rule Precheck": {
+      "main": [
+        [
+          {
+            "node": "Get many labels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get many labels": {
+      "main": [
+        [
+          {
+            "node": "Pack email and labels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pack email and labels": {
+      "main": [
+        [
+          {
+            "node": "Find missing labels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find missing labels": {
+      "main": [
+        [
+          {
+            "node": "If : Missing labels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If : Missing labels": {
+      "main": [
+        [
+          {
+            "node": "Missing → items",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "route by Rule Precheck",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Missing → items": {
+      "main": [
+        [
+          {
+            "node": "Create a label",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create a label": {
+      "main": [
+        [
+          {
+            "node": "RE: Get many labels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RE: Pack email and labels": {
+      "main": [
+        [
+          {
+            "node": "RE: Find missing labels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RE: Get many labels": {
+      "main": [
+        [
+          {
+            "node": "RE: Pack email and labels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RE: Find missing labels": {
+      "main": [
+        [
+          {
+            "node": "If : Missing labels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add label: security": {
+      "main": [
+        [
+          {
+            "node": "Mark security emails as read",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark security emails as read": {
+      "main": [
+        [
+          {
+            "node": "Security Email Notifications",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add label: social": {
+      "main": [
+        [
+          {
+            "node": "Mark social message as read",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add label: promotions": {
+      "main": [
+        [
+          {
+            "node": "Mark promotional message as read",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Message a model": {
+      "main": [
+        [
+          {
+            "node": "Parse Gemini JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Keep email": {
+      "main": [
+        [
+          {
+            "node": "Message a model",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Parse Gemini JSON": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Final Classifier Category",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Final Classifier Category": {
+      "main": [
+        [
+          {
+            "node": "route by classifierCategory",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "route by Rule Precheck": {
+      "main": [
+        [
+          {
+            "node": "Add label: security",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Add label: social",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Add label: promotions",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Keep email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "route by classifierCategory": {
+      "main": [
+        [
+          {
+            "node": "Add label: security",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Add label: social",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Add label: promotions",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Keep email1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Structured Output Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model1": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Structured Output Parser",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Merge1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenRouter Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "readability_check": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "assemble_email_for_review": {
+      "main": [
+        [
+          {
+            "node": "Send the draft for review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Keep email1": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge1",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge1": {
+      "main": [
+        [
+          {
+            "node": "Upsert row(s)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "assemble_email_for_review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram Trigger": {
+      "main": [
+        [
+          {
+            "node": "parse_telegram_callback",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "parse_telegram_callback": {
+      "main": [
+        [
+          {
+            "node": "route by action",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "stop spinner",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "route by action": {
+      "main": [
+        [
+          {
+            "node": "Get row(s)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge2",
+            "type": "main",
+            "index": 1
+          }
+        ],
+        [
+          {
+            "node": "Merge1",
+            "type": "main",
+            "index": 1
+          },
+          {
+            "node": "Edit Fields1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Get row(s)2",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge4",
+            "type": "main",
+            "index": 1
+          },
+          {
+            "node": "Merge1",
+            "type": "main",
+            "index": 1
+          }
+        ],
+        [
+          {
+            "node": "Delete a chat message4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert row(s)": {
+      "main": [
+        []
+      ]
+    },
+    "Get row(s)": {
+      "main": [
+        [
+          {
+            "node": "Reply the approved message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge2": {
+      "main": [
+        [
+          {
+            "node": "Delete a chat message",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Message sent confirmation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields": {
+      "main": [
+        [
+          {
+            "node": "Get row(s)1",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge3",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Get row(s)1": {
+      "main": [
+        [
+          {
+            "node": "Merge3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge3": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Delete a chat message2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get row(s)2": {
+      "main": [
+        [
+          {
+            "node": "Merge4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge4": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Delete a chat message3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Edit Fields1": {
+      "main": [
+        [
+          {
+            "node": "Send message for feedback and wait ",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Delete a chat message1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reply the approved message": {
+      "main": [
+        [
+          {
+            "node": "Merge2",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Mark replied message as read",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send message for feedback and wait ": {
+      "main": [
+        [
+          {
+            "node": "Edit Fields",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Delete a chat message1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": false
+  },
+  "versionId": "f394897f-6ab0-4d2f-b74c-1434576a8fbd",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "7705a8fc635b47562595329a9274ab682c4b14ac1b8c18d794158e3feb16d35a"
+  },
+  "id": "1CKRycSNTGTdv5g0xgIeM",
+  "tags": []
+}
