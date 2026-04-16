@@ -90,7 +90,7 @@ Below is the conceptual architecture of how your emails are handled from arrival
 **Milon Mahmud**
 *AI Automation Engineer • AI/ML Researcher*
 
-[![GitHub](https://img.shields.io/badge/GitHub-milonmahmud-rm-181717?style=flat-square&logo=github)](https://github.com/milonmahmud-rm)
+[![GitHub](https://img.shields.io/badge/GitHub-milonmahmud--rm-181717?style=flat-square&logo=github)](https://github.com/milonmahmud-rm)
 [![LinkedIn](https://img.shields.io/badge/LinkedIn-Milon%20Mahmud-0A66C2?style=flat-square&logo=linkedin)](https://www.linkedin.com/in/milonmahmud/)
 
 ---
